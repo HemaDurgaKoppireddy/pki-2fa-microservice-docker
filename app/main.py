@@ -1,73 +1,141 @@
-from fastapi import FastAPI
-from fastapi.responses import JSONResponse
 import os
+import time
 
-from app.crypto import load_private_key, decrypt_seed
-from app.totp_utils import generate_totp, verify_totp
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
+from cryptography.hazmat.primitives import serialization
+
+from app.crypto import (
+    decrypt_seed,
+    generate_totp_code,
+    verify_totp_code,
+)
+
+# --------------------
+# App setup
+# --------------------
 
 app = FastAPI()
-PRIVATE_KEY = load_private_key()
 
+DATA_DIR = "/data"
+SEED_FILE = os.path.join(DATA_DIR, "seed.txt")
+PRIVATE_KEY_PATH = "student_private.pem"
+
+
+# --------------------
+# Load private key once
+# --------------------
+
+def load_private_key():
+    try:
+        with open(PRIVATE_KEY_PATH, "rb") as f:
+            return serialization.load_pem_private_key(
+                f.read(),
+                password=None,
+            )
+    except Exception:
+        raise RuntimeError("Failed to load private key")
+
+
+private_key = load_private_key()
+
+
+# --------------------
+# Request models
+# --------------------
+
+class DecryptSeedRequest(BaseModel):
+    encrypted_seed: str
+
+
+class VerifyCodeRequest(BaseModel):
+    code: str
+
+
+# ====================
+# Endpoint 1: POST /decrypt-seed
+# ====================
 
 @app.post("/decrypt-seed")
-def decrypt_seed_api(payload: dict):
+def decrypt_seed_endpoint(payload: DecryptSeedRequest):
     try:
-        encrypted_seed = payload.get("encrypted_seed")
-        if not encrypted_seed:
-            raise ValueError
+        seed = decrypt_seed(payload.encrypted_seed, private_key)
 
-        seed = decrypt_seed(encrypted_seed, PRIVATE_KEY)
-        os.makedirs("/data", exist_ok=True)
+        os.makedirs(DATA_DIR, exist_ok=True)
 
-        with open("/data/seed.txt", "w") as f:
+        with open(SEED_FILE, "w") as f:
             f.write(seed)
 
         return {"status": "ok"}
 
     except Exception:
-        return JSONResponse(
+        raise HTTPException(
             status_code=500,
-            content={"error": "Decryption failed"}
+            detail={"error": "Decryption failed"},
         )
 
+
+# ====================
+# Endpoint 2: GET /generate-2fa
+# ====================
 
 @app.get("/generate-2fa")
 def generate_2fa():
-    try:
-        if not os.path.exists("/data/seed.txt"):
-            raise FileNotFoundError
-
-        seed = open("/data/seed.txt").read().strip()
-        code, valid_for = generate_totp(seed)
-
-        return {"code": code, "valid_for": valid_for}
-
-    except Exception:
-        return JSONResponse(
+    if not os.path.exists(SEED_FILE):
+        raise HTTPException(
             status_code=500,
-            content={"error": "Seed not decrypted yet"}
+            detail={"error": "Seed not decrypted yet"},
         )
 
+    try:
+        with open(SEED_FILE, "r") as f:
+            hex_seed = f.read().strip()
+
+        code = generate_totp_code(hex_seed)
+
+        # remaining seconds in current 30s window
+        valid_for = 30 - (int(time.time()) % 30)
+
+        return {
+            "code": code,
+            "valid_for": valid_for,
+        }
+
+    except Exception:
+        raise HTTPException(
+            status_code=500,
+            detail={"error": "Seed not decrypted yet"},
+        )
+
+
+# ====================
+# Endpoint 3: POST /verify-2fa
+# ====================
 
 @app.post("/verify-2fa")
-def verify_2fa(payload: dict):
-    if "code" not in payload:
-        return JSONResponse(
+def verify_2fa(payload: VerifyCodeRequest):
+    if not payload.code:
+        raise HTTPException(
             status_code=400,
-            content={"error": "Missing code"}
+            detail={"error": "Missing code"},
+        )
+
+    if not os.path.exists(SEED_FILE):
+        raise HTTPException(
+            status_code=500,
+            detail={"error": "Seed not decrypted yet"},
         )
 
     try:
-        if not os.path.exists("/data/seed.txt"):
-            raise FileNotFoundError
+        with open(SEED_FILE, "r") as f:
+            hex_seed = f.read().strip()
 
-        seed = open("/data/seed.txt").read().strip()
-        valid = verify_totp(seed, payload["code"])
+        is_valid = verify_totp_code(hex_seed, payload.code)
 
-        return {"valid": valid}
+        return {"valid": is_valid}
 
     except Exception:
-        return JSONResponse(
+        raise HTTPException(
             status_code=500,
-            content={"error": "Seed not decrypted yet"}
+            detail={"error": "Seed not decrypted yet"},
         )
