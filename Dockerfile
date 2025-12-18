@@ -1,32 +1,51 @@
-# -------- Builder --------
+# =========================
+# Stage 1: Builder
+# =========================
 FROM python:3.11-slim AS builder
+
+# Set working directory
 WORKDIR /app
+
+# Copy dependency file first (for caching)
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
 
-# -------- Runtime --------
+# Install Python dependencies
+RUN pip install --no-cache-dir --upgrade pip \
+    && pip install --no-cache-dir -r requirements.txt
+
+
+# =========================
+# Stage 2: Runtime
+# =========================
 FROM python:3.11-slim
+
+# Set timezone to UTC (CRITICAL)
 ENV TZ=UTC
+
+# Set working directory
 WORKDIR /app
 
-RUN apt-get update && \
-    apt-get install -y cron tzdata && \
-    ln -snf /usr/share/zoneinfo/UTC /etc/localtime && \
-    echo UTC > /etc/timezone && \
-    rm -rf /var/lib/apt/lists/*
+# Install system dependencies
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+       cron \
+       tzdata \
+    && ln -snf /usr/share/zoneinfo/UTC /etc/localtime \
+    && echo "UTC" > /etc/timezone \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
 
-COPY --from=builder /usr/local /usr/local
-COPY app app
-COPY scripts scripts
-COPY cron/2fa-cron /etc/cron.d/2fa-cron
+# Copy installed Python packages from builder
+COPY --from=builder /usr/local/lib/python3.11 /usr/local/lib/python3.11
+COPY --from=builder /usr/local/bin /usr/local/bin
+
+# Copy application code
+COPY app ./app
 COPY student_private.pem .
-COPY student_public.pem .
 COPY instructor_public.pem .
+COPY requirements.txt .
 
-RUN chmod 0644 /etc/cron.d/2fa-cron && \
-    crontab /etc/cron.d/2fa-cron && \
-    mkdir -p /data /cron
+# Copy cron configuration
+COPY cron /cron
 
-EXPOSE 8080
-
-CMD service cron start && uvicorn app.main:app --host 0.0.0.0 --port 8080
+# Set permi
