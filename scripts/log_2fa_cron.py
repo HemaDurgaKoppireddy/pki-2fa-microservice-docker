@@ -1,18 +1,29 @@
+#!/usr/bin/env python3
 from datetime import datetime, timezone
-import base64
-import pyotp
 
-try:
-    with open("/data/seed.txt") as f:
-        seed = f.read().strip()
+from app.crypto import generate_totp_code
 
-    seed_bytes = bytes.fromhex(seed)
-    base32_seed = base64.b32encode(seed_bytes).decode()
-    totp = pyotp.TOTP(base32_seed)
-    code = totp.now()
+SEED_FILE = "/data/seed.txt"
 
-    ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
-    print(f"{ts} - 2FA Code: {code}")
 
-except Exception:
-    print("Seed file not found")
+def main():
+    try:
+        # Read seed
+        with open(SEED_FILE, "r") as f:
+            hex_seed = f.read().strip()
+
+        # Generate TOTP
+        code = generate_totp_code(hex_seed)
+
+        # UTC timestamp
+        timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+
+        # Print output (cron redirects this to file)
+        print(f"{timestamp} - 2FA Code: {code}")
+
+    except Exception as e:
+        print(f"ERROR: {str(e)}")
+
+
+if __name__ == "__main__":
+    main()
